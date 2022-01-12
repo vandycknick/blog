@@ -12,9 +12,27 @@ Containerization, especially Docker, has become immensely popular over the last 
 ## Setting the scene
 But before we can get our hands dirty, there are a couple of things I would like to get out of the way first. If you already are a seasoned containerization specialist or only care about the code, feel free to jump right into the next section. If not, let's get through some of the basics first and make sure we are all on the same page. Throughout the blog post, I'm mainly going to look at things from a Docker perspective, but the core concepts basically apply to any container runtime out there. Using Docker for this exercise makes things easier giving most people will have some familiarity with it.
 
-### What is docker?
+### Containers don't run on docker
+
+This is a general misconception and the internet in generally wrong on this one. Ever looked up [docker architecture](https://www.google.com/search?q=docker+architecture&tbm=isch&ved=2ahUKEwjBm8z14qr1AhXTuqQKHUjwBLYQ2-cCegQIABAA&oq=docker+archit&gs_lcp=CgNpbWcQARgAMgQIABBDMgUIABCABDIFCAAQgAQyBQgAEIAEMgUIABCABDIFCAAQgAQyBggAEAUQHjIGCAAQBRAeMgYIABAFEB4yBggAEAUQHjoHCCMQ7wMQJzoICAAQsQMQgwE6CAgAEIAEELEDUMIGWL4RYI4aaABwAHgAgAHQAYgBsAmSAQYxMS4yLjGYAQCgAQGqAQtnd3Mtd2l6LWltZ8ABAQ&sclient=img&ei=EgjeYcHKOdP1kgXI4JOwCw&bih=911&biw=1904) on google. Most of the architecture diagrams here come straight from the docker marketing department. BUt containers do not run ON docker. Containers are just processes that run on the Linux kernel (or windows if thats what you fancy). 
+
 
 Often thought of as cheap VMs, containers are just isolated groups of processes running on a single host. That isolation leverages several underlying technologies built into the Linux kernel: namespaces, cgroups, chroots, capabilities and lots of terms you've probably heard before. It basically boils down to these six things that allow us to create isolated processes:
+
+
+### Processes vs containers.
+
+### Rise of the container engine's
+
+- Podman (Podman - runc)
+- CRI-O (CRI-O - runc)
+- Docker (dockerd - containerd - runc)
+
+Are you also seeing a pattern here? Exactly, all these different container engines use the same core component called [runc](https://github.com/opencontainers/runc). Runc does all the heavy lifting of containerizing a process, and with its simple interface, a whole ecosystem of container engines have spun up around it. There's a bit of background here as to why runc became what it is today, but I'll save you the history lesson jump right into the TLDR. Docker used to be built as a monolithic application, all of that changed in 2015 when a considerable initiative resulted in docker becoming more modular and tools like containerd and runc saw the light of day. Remnants of this old past can still be found all over the internet: [oci initiative blog post](https://www.docker.com/blog/open-container-project-foundation), [runc announcement by solomon](https://www.docker.com/blog/runc), [initial libcontainer library before moving into runbc](https://github.com/docker-archive/libcontainer).
+
+
+### What is docker?
+
 
 1. Namespaces
 2. Chroot/Pivot Root
@@ -30,10 +48,16 @@ Often thought of as cheap VMs, containers are just isolated groups of processes 
 
 ## Getting ready for development
 
-AAll the code is available at https://github.com/vandycknick/runjs, which has a couple of branches one for each of the following sections. Hopefully, this makes it easier to follow along or start from a working state for each section if you get stuck. The runtime is called runjs and it's a little wordplay on `runc`, yes I know the c actually stands for container, still I thought it was funny.
+All the code is available at https://github.com/vandycknick/runjs, which has a couple of branches one for each of the following sections. Hopefully, this makes it easier to follow along or start from a working state for each section if you get stuck. The runtime is called runjs and it's a little wordplay on `runc`, yes I know the c actually stands for container, still I thought it was funny.
 
 If you want to follow along the root of the repo contains a `Vagrantfile`. Don't worry if you don't know Vagrant or have never heard about it before. In essence, Vagrant is similar to Docker, but instead of creating containers with Vagrant, you end up with full-blown virtual machines. You can easily get it installed from [here](https://www.vagrantup.com/), and a simple `vagrant up` followed by a `vagrant ssh` allows you to follow along with the rest of the article without issues. This will give you access to a Rocky Linux VM with Docker, deno and a few extra tools preinstalled that we'll need along the way. If you prefer to set up your own VM, feel free to do so, but do know that the rest of the article is tested and known to be working on this preconfigured machine. Just make sure you don't run this on your main OS, while 99% of the code we'll write is rather harmless, there is a part where if you do make a mistake, it can lead to data loss. I'll definitely mention it when we reach that part, but running this in a VM also ensures you don't clutter your main OS.
 
-## Shielding of our process with namespaces
+## Shielding of a process with namespaces
+
+Before we can start creating a containerized process we first need to get and understanding how processes are created within the Linux kernel.
+
+- Fork (man 2 fork)
+- Exec (man 2 execve, man 3 exec)
+- Clone (man 2 clone)
 
 ## Pivoting into a new filesystem
