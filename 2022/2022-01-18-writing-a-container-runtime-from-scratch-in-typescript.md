@@ -75,13 +75,31 @@ Namespaces are the Linux kernel feature that enables the containerization of a p
 - user
 - cgroup
 
-Don't worry about these just yet; we'll discuss them more in detail once we start writing some code. But before we can go any further, we'll need to understand how processes are created in Linux. If you've ever programmed in python before, you probably know that you can create a new process by calling `subprocess.Popen` or any of its many derivatives. Many other programming languages offer a similar API like `exec.Command` in golang, `Process.Start` in dotnet or `child_process.spawn` in nodejs. While all these languages offer different API calls they all end up making the same syscalls in the Linux kernel named `fork`, `clone` and `execve`. While technically `fork` isn't actually a syscall but rather a wrapper around `clone`. For simplicity we are going to treat it as such, mainly because you will often find it referenced as a syscall online but it's also the simpler one of the two to call out to from Deno. Using these API's to create a new process looks something like this:
+Don't worry about these just yet; we'll discuss them more in detail once we start writing some code. But before we can go any further, we'll need a common understand about how processes are created on a Linux kernel. If you've ever programmed in python before, you probably know that you can create a new process by calling `subprocess.Popen` or any of its many derivatives. Many other programming languages offer a similar API like `exec.Command` in golang, `Process.Start` in dotnet or `child_process.spawn` in nodejs. While all these languages offer different API calls they all end up making the same syscalls in the Linux kernel named `fork`, `clone` and `execve`. While technically `fork` isn't actually a syscall but rather a wrapper around `clone`. For simplicity we are going to treat it as such, mainly because you will often find it referenced as a syscall online but it's also the simpler one of the two to call out to from Deno. Using these API's to create a new process looks something like this:
 
 ![fork-exec-syscall-diagram](./assets/2022-01-18-writing-a-container-runtime-from-scratch-in-typescript/fork-exec.png)
 
+To create a new process a parent will call `fork` which is a parameterless function that creates a new process by duplicating the calling process. This means that the fork call creates an exact copy of itself after which the code will resume from the exact point in the codebase. The return value from `fork` allows us to determine wether the code after the call is running in the child or parent process. The calling process is often referred to as the parent process whereas the newly created process is often called the child process. We can then use the `wait` syscall in the parent process to block execution and wait for the child process to exit. A child process often calls out into `exec`, which will totally replace the execution stack with a new process like `ls` for example. Let's make this a bit more concrete by recording all syscalls that happen while creating a new process in Python. The following one liner Python script will run the `ls` command and print the output of the command to stdout `import subprocess; print(subprocess.check_output(['ls']).decode('utf-8'))`. Combining this oneliner with `strace -f` and we'll be able to see all syscalls python makes in order to create a new process:
+
 ```sh
-strace -f python3 -c "import subprocess; print(subprocess.check_output(['ls']).decode('utf-8'))" 2>&1 | grep "clone\|fork\|exec\|wait"
+$ strace -f python3 -c "import subprocess; print(subprocess.check_output(['ls']).decode('utf-8'))" 2>&1 | grep "clone\|fork\|exec\|wait"
+
+execve("/bin/python3", ["python3", "-c", "import subprocess; print(subproc"...], 0x7fff592b3688 /* 37 vars */) = 0
+<...>
+clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0x7f3ec675d3d0) = 4411
+<...>
+[pid  4411] execve("/opt/deno/bin/ls", ["ls"], 0x55ce62f4c3e0 /* 38 vars */) = -1 ENOENT (No such file or directory)
+[pid  4411] execve("/opt/deno/bin/ls", ["ls"], 0x55ce62f4c3e0 /* 38 vars */) = -1 ENOENT (No such file or directory)
+[pid  4411] execve("/usr/local/sbin/ls", ["ls"], 0x55ce62f4c3e0 /* 38 vars */) = -1 ENOENT (No such file or directory)
+[pid  4411] execve("/sbin/ls", ["ls"], 0x55ce62f4c3e0 /* 38 vars */) = -1 ENOENT (No such file or directory)
+[pid  4411] execve("/bin/ls", ["ls"], 0x55ce62f4c3e0 /* 38 vars */ <unfinished ...>
+[pid  4411] <... execve resumed>)       = 0
+[pid  4410] wait4(4411,  <unfinished ...>
+<... wait4 resumed>[{WIFEXITED(s) && WEXITSTATUS(s) == 0}], 0, NULL) = 4411
 ```
+
+By default `strace` prints to stderr which makes it hard to filter out its output, but with a little bash redirection trick we can redirect stderr to stdout `2>&1` and use grep to filter the output to just the syscalls we are interested in. What's not part of the recording is that bash (or whatever shell you are using to call this command) will have called for, this happened before `strace` was running and able to record anything. But the first call we see in the filtered out but is an `execve` call starting the Python process itself with the same arguments we passed to the command line. After this point python will be running and at some point it will call out to `clone`, as mentioned before `fork` is just a wrapper around `clone` so in recordings we'll only find traces of the `clone` syscall.
+
 
 ## Pivoting into a new filesystem
 
