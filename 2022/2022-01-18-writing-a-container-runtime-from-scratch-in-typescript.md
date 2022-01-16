@@ -65,23 +65,23 @@ I highly recommend running any of the following code snippets in a Virtual machi
 
 ## Shielding of a process with namespaces
 
-From a hosts perspective container is just a process like any other
+Namespaces are the Linux kernel feature that enables the containerization of a process. First introduced back in 2002 with Linux 2.4.19, the idea behind a namespace is to wrap specific global system resources in an abstraction layer. This abstraction layer makes it appear as if processes within a namespace have their own isolated set of resources. Different process groups can have different sets of namespaces applied to them. Initially only the mount namespaces existed but over time more of them got added to the kernel and at the moment there are seven distinct namespaces available:
 
-As mentioned earlier containers are just isolated process running on the Linux. So in order to understand containerization we need to know how to create a process. 
+- uts
+- mnt
+- pid
+- net
+- ipc
+- user
+- cgroup
 
-In it's simplest form a container is just another process on the system, it's the boundaries that the Linux allows us to draw around this process that makes it a container. Thus in order to understand containerization we need to know how to create a process. Many programming languages offer some higher level abstraction that allows creating a new process without to much fan fare. 
-
-
-
-A container from a level perspective is just a process like any other, but with few extra's that limits this process view over the whole system. That means we'll need to start out with a normal process first before we can start containerizing it. In python you have `subprocess.Popen` in dotnet `Process.Start` in golang `exec.Command` to create a new process. 
-
-Before we can start creating a containerized process we first need to get and understanding how processes are created within the Linux kernel.
-
-- Fork (man 2 fork)
-- Exec (man 2 execve, man 3 exec)
-- Clone (man 2 clone)
+Don't worry about these just yet; we'll discuss them more in detail once we start writing some code. But before we can go any further, we'll need to understand how processes are created in Linux. If you've ever programmed in python before, you probably know that you can create a new process by calling `subprocess.Popen` or any of its many derivatives. Many other programming languages offer a similar API like `exec.Command` in golang, `Process.Start` in dotnet or `child_process.spawn` in nodejs. While all these languages offer different API calls they all end up making the same syscalls in the Linux kernel named `fork`, `clone` and `execve`. While technically `fork` isn't actually a syscall but rather a wrapper around `clone`. For simplicity we are going to treat it as such, mainly because you will often find it referenced as a syscall online but it's also the simpler one of the two to call out to from Deno. Using these API's to create a new process looks something like this:
 
 ![fork-exec-syscall-diagram](./assets/2022-01-18-writing-a-container-runtime-from-scratch-in-typescript/fork-exec.png)
+
+```sh
+strace -f python3 -c "import subprocess; print(subprocess.check_output(['ls']).decode('utf-8'))" 2>&1 | grep "clone\|fork\|exec\|wait"
+```
 
 ## Pivoting into a new filesystem
 
