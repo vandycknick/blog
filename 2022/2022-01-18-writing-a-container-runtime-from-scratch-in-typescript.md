@@ -1,7 +1,7 @@
 ---
 id: ea2370bd-e1d1-442d-a8c9-a891bc4baa76
 title: "Add styling to an active link in Next.js"
-description: 
+description:
 date: 2022-01-18T20:00:00+01:00
 categories: [scratch]
 cover: ./assets/2022-01-18-writing-a-container-runtime-from-scratch-in-typescript/cover.jpg
@@ -15,8 +15,7 @@ Before jumping straight down the deep end, there are a couple of things I would 
 
 ### Containers don't run on docker
 
-This is a general misconception and the internet in generally wrong on this one. Ever looked up [docker architecture](https://www.google.com/search?q=docker+architecture&tbm=isch&ved=2ahUKEwjBm8z14qr1AhXTuqQKHUjwBLYQ2-cCegQIABAA&oq=docker+archit&gs_lcp=CgNpbWcQARgAMgQIABBDMgUIABCABDIFCAAQgAQyBQgAEIAEMgUIABCABDIFCAAQgAQyBggAEAUQHjIGCAAQBRAeMgYIABAFEB4yBggAEAUQHjoHCCMQ7wMQJzoICAAQsQMQgwE6CAgAEIAEELEDUMIGWL4RYI4aaABwAHgAgAHQAYgBsAmSAQYxMS4yLjGYAQCgAQGqAQtnd3Mtd2l6LWltZ8ABAQ&sclient=img&ei=EgjeYcHKOdP1kgXI4JOwCw&bih=911&biw=1904) on google. Most of the architecture diagrams here come straight from the docker marketing department. BUt containers do not run ON docker. Containers are just processes that run on the Linux kernel (or windows if thats what you fancy). 
-
+This is a general misconception and the internet in generally wrong on this one. Ever looked up [docker architecture](https://www.google.com/search?q=docker+architecture&tbm=isch&ved=2ahUKEwjBm8z14qr1AhXTuqQKHUjwBLYQ2-cCegQIABAA&oq=docker+archit&gs_lcp=CgNpbWcQARgAMgQIABBDMgUIABCABDIFCAAQgAQyBQgAEIAEMgUIABCABDIFCAAQgAQyBggAEAUQHjIGCAAQBRAeMgYIABAFEB4yBggAEAUQHjoHCCMQ7wMQJzoICAAQsQMQgwE6CAgAEIAEELEDUMIGWL4RYI4aaABwAHgAgAHQAYgBsAmSAQYxMS4yLjGYAQCgAQGqAQtnd3Mtd2l6LWltZ8ABAQ&sclient=img&ei=EgjeYcHKOdP1kgXI4JOwCw&bih=911&biw=1904) on google. Most of the architecture diagrams here come straight from the docker marketing department. BUt containers do not run ON docker. Containers are just processes that run on the Linux kernel (or windows if thats what you fancy).
 
 Often thought of as cheap VMs, containers are just isolated groups of processes running on a single host. That isolation leverages several underlying technologies built into the Linux kernel: namespaces, cgroups, chroots, capabilities and lots of terms you've probably heard before. It basically boils down to these six things that allow us to create isolated processes:
 
@@ -59,8 +58,7 @@ The code used throughout this post will be available at https://github.com/vandy
 
 The `libc` folder contains all the interop code required to interface with the Linux kernel. It leverages the [FFI](https://deno.land/manual@v1.17.3/runtime/ffi_api) available in Deno as of 1.13 to be able to call out into native code. When you hear native code, you might think unsafe code and dealing with pointers and memory. But that's not the case. Every function exported from `libc/mod.ts` are safe JavaScript wrappers that API wise closely match up to the native Linux syscall, which should make it easier to explore these API's online or through the man pages.
 
-I'll mainly focus on `src/main.ts`, 
-
+I'll mainly focus on `src/main.ts`,
 
 ```ts
 const run = (args: string[]) => {
@@ -79,19 +77,21 @@ $ deno run ./src/main.ts sh
 run [ "ps", "aux" ]
 ```
 
-I highly recommend running any of the following code snippets in a Virtual machine. While 99% of the code we'll write is rather harmless, there is a small section in this post that could cause permanent data loss if you manage to get a few wires crossed. Thats exactly why the `Vagrantfile` is there, it allows me to provide a safe pretested environment. Don't worry if you don't know Vagrant or have never heard about it before. In essence, Vagrant is similar to Docker, but instead of creating containers with Vagrant you end up with full-blown virtual machines. You can easily get it installed from [here](https://www.vagrantup.com/), and a simple `vagrant up` followed by a `vagrant ssh` allows you to follow along with the rest of the article without issues. 
+I highly recommend running any of the following code snippets in a Virtual machine. While 99% of the code we'll write is rather harmless, there is a small section in this post that could cause permanent data loss if you manage to get a few wires crossed. Thats exactly why the `Vagrantfile` is there, it allows me to provide a safe pretested environment. Don't worry if you don't know Vagrant or have never heard about it before. In essence, Vagrant is similar to Docker, but instead of creating containers with Vagrant you end up with full-blown virtual machines. You can easily get it installed from [here](https://www.vagrantup.com/), and a simple `vagrant up` followed by a `vagrant ssh` allows you to follow along with the rest of the article without issues.
 
 ## Shielding of a process with namespaces
 
 Namespaces are the Linux kernel feature that enables the containerization of a process. First introduced back in 2002 with Linux 2.4.19, the idea behind a namespace is to wrap specific global system resources in an abstraction layer. This abstraction layer makes it appear as if processes within a namespace have their own isolated set of resources. Different process groups can have different sets of namespaces applied to them. Initially only the mount namespaces existed but over time more of them got added to the kernel and at the moment there are seven distinct namespaces available:
 
-- uts
-- mnt
-- pid
-- net
-- ipc
-- user
-- cgroup
+| Namespace | Flag            | Page                   | Isolates                             |
+| --------- | --------------- | ---------------------- | ------------------------------------ |
+| UTS       | CLONE_NEWUTS    | man uts_namespaces     | Hostname and NIS domain name         |
+| Mount     | CLONE_NEWNS     | man mount_namespaces   | Mount points                         |
+| PID       | CLONE_NEWPID    | man pid_namespaces     | Process IDs                          |
+| Network   | CLONE_NEWNET    | man network_namespaces | Network devices, stacks, ports, etc. |
+| IPC       | CLONE_NEWIPC    | man ipc_namespaces     | System V IPC, POSIX message queues   |
+| User      | CLONE_NEWUSER   | man user_namespaces    | User and group IDs                   |
+| Cgroup    | CLONE_NEWCGROUP | man cgroup_namespaces  | Cgroup root directory                |
 
 Don't worry about these just yet; we'll discuss them in more detail once we start writing some code. But before we can go any further, we'll need a common understand about how processes are created in the Linux kernel. If you've ever programmed in python before, you probably know that you can create a new process by calling `subprocess.Popen` or any of its many derivatives. Many other programming languages offer a similar API like `exec.Command` in golang, `Process.Start` in dotnet or `child_process.spawn` in nodejs. While all these languages offer different API calls they all end up making the same syscalls in the Linux kernel named `fork`, `clone` and `execve`. While technically `fork` isn't actually a syscall but rather a wrapper around `clone`. For simplicity we are going to treat it as such, mainly because you will often find it referenced as a syscall online but it's the easier one to use and implement in Deno. Using these API's to create a new process looks something like this:
 
@@ -120,9 +120,7 @@ Prefixing a command with `strace` will record all syscalls it makes during execu
 
 Ok, enough talk, let's start writing some code. As mentioned a few times already, we'll need to call `fork`, which is exported from the libc module in `libc/mod.ts`. It will return a number that allows us to determine if we are continuing in the parent, child or if the fork failed. If it returns `-1` the `fork` failed, we'll immediately stop execution by throwing an error saying we could not create a new child process. If the return value is 0, we are running as the child process. When running in the child process, we'll call the `container` function and afterwards immediately call `Deno.exit` to make sure we halt execution. If `fork` returns any other positive return value will be the child process ID indicating we are running in the parent process. In the parent process, we'll call the `waitPid` function and pass the child process ID returned from the `fork` syscall. This will block execution until the child process is finished and return the status code from the child process, which we'll use to determine whether it ran successfully or not.
 
-
 ```ts
-import { parse } from "https://deno.land/std@0.121.0/flags/mod.ts";
 import { fork, waitPid } from "../libc/mod.ts";
 
 const run = (args: string[]) => {
@@ -134,7 +132,7 @@ const run = (args: string[]) => {
   if (pid === 0) {
     console.log("child", pid, args);
     container(args);
-    Deno.exit(0)
+    Deno.exit(0);
   }
 
   // Running as the parent process
@@ -160,18 +158,16 @@ parent 5850 [ "sh" ]
 child 0 [ "sh" ]
 ```
 
-The example makes it look like the parent always executes before the child process. But that's not always the case; it's indeterminate which process - the parent or the child - has access to the CPU next. On a multiprocessor system, they could simultaneously access the CPU. In our case, this won't matter but do know that relying on a specific execution order could result in subtle and hard to debug race conditions. But as you can see, we're moving in the right direction. We just need a few more things in place to mimic the `docker run' command. When executing `deno run -A --unstable ./src/main/ts ps aux`, we want the child process to start running the `ps` program and use `aux` as arguments. For this, we can use `exec`, which has the following type definition:
+The example makes it look like the parent always executes before the child process. But that's not always the case; it's indeterminate which process - the parent or the child - has access to the CPU next. On a multiprocessor system, they could simultaneously access the CPU. In our case, this won't matter but do know that relying on a specific execution order could result in subtle and hard to debug race conditions. But as you can see, we're moving in the right direction. We just need a few more things in place to mimic the `docker run' command. When executing `deno run -A --unstable ./src/main/ts ps aux`, we want the child process to start running the `ps`program and use`aux`as arguments. For this, we can use`exec`, which has the following type definition:
 
 ```ts
 const exec: (fileName: string, args: string[], env?: { [key: string]: string; } | undefined) => never`
 ```
+
 One of the first arguments takes a fileName. This can be a relative or an absolute path. If it's a relative path, the function will look in the `PATH` variable to find the binary. If it can't find the program available on your `PATH` it will stop execution and throw an error. The second argument is a string array that represents the list of arguments. The last one is an optional object that allows us to tweak the programs environment variables. We won't need this one just yet; in doing so, the child process will just inherit all environment variables. Since it replaces the program that called it, a successful `exec` never returns.
 
 ```ts
 import { fork, exec, waitPid } from "../libc/mod.ts";
-
-const NAME = "runjs";
-const VERSION = "1.0.0";
 
 const run = (args: string[]) => {
   const pid = fork();
@@ -200,8 +196,7 @@ const container = (args: string[]): never => {
 };
 ```
 
-Once again, we'll import `exec` from the `libc` module. We'll also remove the console logs we put in just earlier to reduce the noise. In the `container` function, we'll destructure the args array; the first argument will be the program to execute, the rest will be passed as program arguments. We'll call exec and indicate that the `container` function never returns by adding the `never` return type. Given exec only returns to the caller if an error occurs, we'll wrap it up in a `try/catch` clause and log any errors to stderr. If an error does occur, we'll use `Deno.exit()` with exit code of 1 to stop the child process and indicate we terminated abruptly.
-
+Once again, we'll import `exec` from the `libc` module. We'll also remove the console logs we put in just earlier to reduce the noise. In the `container` function, we'll destructure the args array; the first argument will be the program to execute, the rest will be passed as program arguments. We'll call exec and indicate that the `container` function never returns by adding the `never` return type. Given exec only returns to the caller if an error occurs, we'll wrap it up in a `try/catch` clause and log any errors to stderr. If an error does occur, we'll use `Deno.exit()` with exit code of 1 to stop the child process and indicate we terminated abruptly. Let's give it a try:
 
 ```sh
 $ deno run -A --unstable ./src/main.ts sh
@@ -213,8 +208,7 @@ sh-4.4# pwd
 /vagrant
 ```
 
-
-We can also play around with returning different exit codes from the `sh` session and see them getting reflected back in bash when out container engine exists:
+Executing our mini container engine now will start a new `sh` session and present us with a shell prompt. The output of any command we run gets printed back to the console we currently have open. This is because `exec` inherits stdio file descriptors of the parent process by default. Obviously, that might not always be what you want, but this will work just fine for now. Actual container engines like docker will change these file descriptors so they can capture output to file. This makes it possible to call `docker logs` on a running container and view everything printed to stdout. From the `waitPid` function, we get the exit code of the child process. Because of this, we can also play around with returning different exit codes from the containerized `sh` session and see them getting reflected back in bash when our container engine exits:
 
 ```sh
 $ deno run -A --unstable ./src/main.ts sh
@@ -225,9 +219,9 @@ $ echo $?
 111
 ```
 
-> The status code returned from waitPid is truncated to an 8bit value, meaning the max return value is 255.
+> The status code returned from waitPid is truncated to an 8bit value, meaning the max return value is 255. Any higher value will get wrapped around.
 
-
+### UNIX Time-sharing System (uts)
 
 ## Pivoting into a new filesystem
 
