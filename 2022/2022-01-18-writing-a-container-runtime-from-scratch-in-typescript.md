@@ -93,11 +93,11 @@ Namespaces are the Linux kernel feature that enables the containerization of a p
 - user
 - cgroup
 
-Don't worry about these just yet; we'll discuss them more in detail once we start writing some code. But before we can go any further, we'll need a common understand about how processes are created on a Linux kernel. If you've ever programmed in python before, you probably know that you can create a new process by calling `subprocess.Popen` or any of its many derivatives. Many other programming languages offer a similar API like `exec.Command` in golang, `Process.Start` in dotnet or `child_process.spawn` in nodejs. While all these languages offer different API calls they all end up making the same syscalls in the Linux kernel named `fork`, `clone` and `execve`. While technically `fork` isn't actually a syscall but rather a wrapper around `clone`. For simplicity we are going to treat it as such, mainly because you will often find it referenced as a syscall online but it's also the simpler one of the two to call out to from Deno. Using these API's to create a new process looks something like this:
+Don't worry about these just yet; we'll discuss them in more detail once we start writing some code. But before we can go any further, we'll need a common understand about how processes are created in the Linux kernel. If you've ever programmed in python before, you probably know that you can create a new process by calling `subprocess.Popen` or any of its many derivatives. Many other programming languages offer a similar API like `exec.Command` in golang, `Process.Start` in dotnet or `child_process.spawn` in nodejs. While all these languages offer different API calls they all end up making the same syscalls in the Linux kernel named `fork`, `clone` and `execve`. While technically `fork` isn't actually a syscall but rather a wrapper around `clone`. For simplicity we are going to treat it as such, mainly because you will often find it referenced as a syscall online but it's the easier one to use and implement in Deno. Using these API's to create a new process looks something like this:
 
 ![fork-exec-syscall-diagram](./assets/2022-01-18-writing-a-container-runtime-from-scratch-in-typescript/fork-exec.png)
 
-A parent will call `fork` or `clone` to create a new process, making an exact copy itself and continuing execution. The key point to understanding `fork` is to realize that two processes exist after it has completed its work, and execution continues from the point where `fork` returns. The return value allows us to determine whether the code after the fork runs as the child or the parent process. As you might have noticed, the calling process is often referred to as the parent process, whereas the newly created process is often called the child process. We can then use the `wait` syscall in the parent process to block execution and wait for the child process to exit. A child process often calls out into `execve`, which loads a new program into a process's memory. All of this might still sound very abstract at this point. But let's make this a bit more concrete by recording all syscalls while creating a new process in Python. The following one-liner Python script will run the `ls` command and print the output of the command to stdout `import subprocess; print(subprocess.check_output(['ls']).decode('utf-8'))`. With `strace` we can look under the covers and see what API calls Python calls out to create a new process:
+As you might have noticed, the calling process is often referred to as the parent process, whereas the newly created process is often called the child process. A parent will call `fork` or `clone` to create a new process, making an exact copy itself and continuing execution. The key point to understanding `fork` is to realize that two processes exist after it has completed its work, and execution continues from the point where `fork` returns. The return value allows us to determine whether after the fork we are continuing as the child or parent process. We can then use the `wait` syscall in the parent process to block execution and wait for the child process to exit. A child process often calls out into `execve`, which loads a new program into a process's memory. All of this might still sound very abstract at this point. But let's make this a bit more concrete by recording all syscalls while creating a new process in Python. The following one-liner Python script will run the `ls` command and print the output of the command to stdout `import subprocess; print(subprocess.check_output(['ls']).decode('utf-8'))`. With `strace` we can look under the covers and see what API calls Python calls out to create a new process:
 
 ```sh
 $ strace -f python3 -c "import subprocess; print(subprocess.check_output(['ls']).decode('utf-8'))" 2>&1 | grep "clone\|fork\|exec\|wait"
@@ -116,9 +116,9 @@ clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, c
 <... wait4 resumed>[{WIFEXITED(s) && WEXITSTATUS(s) == 0}], 0, NULL) = 4411
 ```
 
-Prefixing a command with `strace` will record all syscalls it makes during execution and print a line for each syscall with argument information to stderr. We'll need to send stderr to stdout with some bash redirection (`2>&1`) to filter the output and make it more digestible. In the example above, you can see the first call to `execve` is starting the Python process itself. This is because when executing this command from bash it will have called fork and the child process it created will then start up Python. `strace` is only able to trace syscalls from the child process, hence why we don't see the fork or clone call at the start of the trace. After that point, the child process gets replaced by the program passed to execve, and Python will be running. We then see Python calling out to `clone` and creating a new process with ID 4411. As mentioned earlier, `fork` is just a wrapper around `clone`, hence why we'll only find traces of the `clone` syscall in the recordings. We can then see multiple `execve` calls all for the `ls` binary. `execve` requires passing an absolute path and we see Python looking for `ls` for every path in the `PATH` environment variable. Eventually, it finds `ls` at `/bin/ls` and executes the program. The parent process with ID 4410 calls `wait4` and blocks execution until the child process (4411) exits, after which we see execution resuming in the parent process.
+Prefixing a command with `strace` will record all syscalls it makes during execution and print one line for each syscall with argument information to stderr. We'll need to send stderr to stdout with some bash redirection (`2>&1`) to filter the output and make it more digestible. In the example above, you can see the first call to `execve` is starting the Python process itself. This is because when executing this command from bash it will have called fork and the child process it created will then start up Python. `strace` is only able to trace syscalls from the child process, hence why we don't see the fork or clone call before the trace started. After that point, the child process gets replaced by the program passed to execve, and Python will be running. We then see Python calling out to `clone` and creating a new process with ID 4411. As mentioned earlier, `fork` is just a wrapper around `clone`, hence why we'll only find traces of the `clone` syscall in the recordings. We can then see multiple `execve` calls all for the `ls` binary. `execve` requires passing an absolute path and we see Python looking for `ls` for every path in the `PATH` environment variable. Eventually, it finds `ls` at `/bin/ls` and executes the program. The parent process with ID 4410 calls `wait4` and blocks execution until the child process (4411) exits, after which we see execution resuming in the parent process.
 
-Ok, enough talk, let's start writing some code. As mentioned a few times already, we'll need to call `fork`, which is exported from the libc module in `libc/mod.ts` to create a new process. It will return a number that allows us to determine if we are continuing in the parent, child or if the fork failed. If it returns `-1` the `fork` failed, we'll immediately stop execution by throwing an error saying we could not create a new child process. If the return value is 0, we are running as the child process. When running in the child process, we'll call the `child` function and afterwards immediately call `Deno.exit` to make sure we halt execution. If `fork` returns any other positive value, the return value will be the child process ID indicating we are running in the parent process. In the parent process, we'll call the `waitPid` function and pass the child process ID returned from the `fork` syscall. This will block execution until the child process is finished and return the status code from the child process, which we'll use to determine whether it ran successfully or not.
+Ok, enough talk, let's start writing some code. As mentioned a few times already, we'll need to call `fork`, which is exported from the libc module in `libc/mod.ts`. It will return a number that allows us to determine if we are continuing in the parent, child or if the fork failed. If it returns `-1` the `fork` failed, we'll immediately stop execution by throwing an error saying we could not create a new child process. If the return value is 0, we are running as the child process. When running in the child process, we'll call the `container` function and afterwards immediately call `Deno.exit` to make sure we halt execution. If `fork` returns any other positive return value will be the child process ID indicating we are running in the parent process. In the parent process, we'll call the `waitPid` function and pass the child process ID returned from the `fork` syscall. This will block execution until the child process is finished and return the status code from the child process, which we'll use to determine whether it ran successfully or not.
 
 
 ```ts
@@ -132,13 +132,9 @@ const run = (args: string[]) => {
 
   // Running as the child process
   if (pid === 0) {
-    try {
-      console.log("child", pid, args);
-      child(args);
-      Deno.exit(0);
-    } catch {
-      Deno.exit(1);
-    }
+    console.log("child", pid, args);
+    container(args);
+    Deno.exit(0)
   }
 
   // Running as the parent process
@@ -148,7 +144,7 @@ const run = (args: string[]) => {
   return status.code;
 };
 
-const child = (args: string[]) => {};
+const container = (args: string[]) => {};
 ```
 
 Executing this script will yield the following result:
@@ -164,7 +160,74 @@ parent 5850 [ "sh" ]
 child 0 [ "sh" ]
 ```
 
-The execution order is actually undeterministically, from the example it seems that parent would always  execute before the child process. But that's defintely not the case running this 100 times it could be that x% of the time the child will run before the parent. 
+The example makes it look like the parent always executes before the child process. But that's not always the case; it's indeterminate which process - the parent or the child - has access to the CPU next. On a multiprocessor system, they could simultaneously access the CPU. In our case, this won't matter but do know that relying on a specific execution order could result in subtle and hard to debug race conditions. But as you can see, we're moving in the right direction. We just need a few more things in place to mimic the `docker run' command. When executing `deno run -A --unstable ./src/main/ts ps aux`, we want the child process to start running the `ps` program and use `aux` as arguments. For this, we can use `exec`, which has the following type definition:
+
+```ts
+const exec: (fileName: string, args: string[], env?: { [key: string]: string; } | undefined) => never`
+```
+One of the first arguments takes a fileName. This can be a relative or an absolute path. If it's a relative path, the function will look in the `PATH` variable to find the binary. If it can't find the program available on your `PATH` it will stop execution and throw an error. The second argument is a string array that represents the list of arguments. The last one is an optional object that allows us to tweak the programs environment variables. We won't need this one just yet; in doing so, the child process will just inherit all environment variables. Since it replaces the program that called it, a successful `exec` never returns.
+
+```ts
+import { fork, exec, waitPid } from "../libc/mod.ts";
+
+const NAME = "runjs";
+const VERSION = "1.0.0";
+
+const run = (args: string[]) => {
+  const pid = fork();
+
+  if (pid === -1) throw new Error("Failed to create a new process");
+
+  // Running as the child process
+  if (pid === 0) {
+    try {
+      container(args);
+    } catch (ex) {
+      console.error(ex);
+      Deno.exit(1);
+    }
+  }
+
+  // Running as the parent process
+  // pid === to the process ID of the child process
+  const status = waitPid(pid);
+  return status.code;
+};
+
+const container = (args: string[]): never => {
+  const [program, ...restArgs] = args;
+  return exec(program, restArgs);
+};
+```
+
+Once again, we'll import `exec` from the `libc` module. We'll also remove the console logs we put in just earlier to reduce the noise. In the `container` function, we'll destructure the args array; the first argument will be the program to execute, the rest will be passed as program arguments. We'll call exec and indicate that the `container` function never returns by adding the `never` return type. Given exec only returns to the caller if an error occurs, we'll wrap it up in a `try/catch` clause and log any errors to stderr. If an error does occur, we'll use `Deno.exit()` with exit code of 1 to stop the child process and indicate we terminated abruptly.
+
+
+```sh
+$ deno run -A --unstable ./src/main.ts sh
+sh-4.4# hostname
+rocky
+sh-4.4# ls
+Makefile  README.md  Vagrantfile  libc  runjs  scripts  src
+sh-4.4# pwd
+/vagrant
+```
+
+
+We can also play around with returning different exit codes from the `sh` session and see them getting reflected back in bash when out container engine exists:
+
+```sh
+$ deno run -A --unstable ./src/main.ts sh
+sh-4.4# exit 111
+exit
+
+$ echo $?
+111
+```
+
+> The status code returned from waitPid is truncated to an 8bit value, meaning the max return value is 255.
+
+
 
 ## Pivoting into a new filesystem
 
