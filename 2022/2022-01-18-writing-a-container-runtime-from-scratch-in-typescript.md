@@ -227,7 +227,7 @@ Yeah, I know that was a lot of stuff to go through before we can start looking a
 unshare(flags: number): void
 ```
 
-The flags argument is a bitmask that specifies which parts should be unshared and can be combined to apply multiple namespaces. It's just a void function that doesn't return any meaningful value. To decouple our container from the UTS namespace, all we need to do is import the `CLONE_NEWUTS` and call it at the start of our `container` function:
+The flags argument is a bitmask that specifies which parts should be unshared and can be combined to apply multiple namespaces. It's just a void function that doesn't return any meaningful value. To decouple our container from the UTS namespace, all we need to do is import the `CLONE_NEWUTS` and call `unshare()` right before we `fork()` our container process:
 
 ```ts
 import {
@@ -239,9 +239,30 @@ import {
   setHostname,
 } from "../libc/mod.ts";
 
-const container = (args: string[]): never => {
+const run = (args: string[]) => {
   unshare(CLONE_NEWUTS);
 
+  const pid = fork();
+
+  if (pid === -1) throw new Error("Failed to create a new process");
+
+  // Running as the child process
+  if (pid === 0) {
+    try {
+      container(args);
+    } catch (ex) {
+      console.error(ex);
+      Deno.exit(1);
+    }
+  }
+
+  // Running as the parent process
+  // pid === to the process ID of the child process
+  const status = waitPid(pid);
+  return status.code;
+};
+
+const container = (args: string[]): never => {
   setHostname("container");
 
   const [program, ...restArgs] = args;
@@ -249,7 +270,7 @@ const container = (args: string[]): never => {
 };
 ```
 
-Let's also change the hostname to a different value right before calling `exec()`. In the example above I got very original and changed it to `container`, feel free to change it to something else. Let's give it a try:
+Let's also change the hostname to a different value right before calling `exec()`. In the example above, I got very original and changed it to `container`; feel free to change it to something more exciting if you feel like it. Let's give it a try:
 
 ```sh
 $ deno run -A --unstable ./src/main.ts sh
@@ -264,12 +285,59 @@ sh-4.4# hostname
 new-hostname
 ```
 
-And if we exit out of the container and if we look at the system level nothing has changed, hooray:
+And when we exit out of the container we can see that at the host level nothing has changed, hooray:
 
 ```sh
 $ hostname
 rocky
 ```
+
+Next up we have the IPC namespace also introduced in LInux 2.6.19 (2006) to isolate interprocess communication resources. It affects System V IPC objects and POSIX message queues or can be used to separate shared memory (SHM) between two processes to avoid misusage. When an IPC namespace is destroyed then all IPC objects within the namespace automatically get destroyed, too. To add it to our program we just need to OR it with the uts namespace flag:
+
+```ts
+...
+const run = (args: string[]) => {
+  unshare(CLONE_NEWUTS | CLONE_NEWIPC);
+
+  const pid = fork();
+  ...
+```
+
+The PID namespace was introduced in Linux 2.6.24 (2008) and gives processes an independent set of process identifiers (PIDs). This means that processes which reside in different namespaces can own the same PID. In the end a process has two PIDs: the PID inside the namespace, and the PID outside the namespace on the host system. The PID namespaces can be nested, so if a new process is created it will have a PID for each namespace from its current namespace up to the initial PID namespace.
+
+The first process created in a PID namespace gets the number 1 and gains all the same special treatment as the usual init process. For example, all processes within the namespace will be re-parented to the namespace’s PID 1 rather than the host PID 1. In addition the termination of this process will immediately terminate all processes in its PID namespace and any descendants. Let’s create a new PID namespace:
+
+```ts
+...
+const run = (args: string[]) => {
+  unshare(CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID);
+
+  const pid = fork();
+  ...
+```
+
+When we run execute our container runtime now we can see that the `sh` process is running as pid 1:
+
+```sh
+$ deno run -A --unstable ./src/main.ts sh
+sh-4.4# echo $$
+1
+```
+
+Looks isolated, doesn't it? Not exactly, when we run `ps aux`, we can still get an overview of all processes running on the system. This happens because of something called the proc filesystem, which is mounted at `/proc`. `procfs` is a pseudo filesystem which is just Linux speak for this thing is special. It's the kernel's way of exposing process or system-related information back to user space in a file like manner. The problem here is that we unshared the PID namespace but left the host `/proc` filesystem mounted in the container. If we want to isolate this, we'll need to remount this filesystem again. From within our container, we can do this by running `mount -t proc proc /proc` and that fixes our problem:
+
+```sh
+$ deno run -A --unstable ./src/main.ts sh
+
+sh-4.4# mount -t proc proc /proc
+
+sh-4.4# ps aux
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root           1  0.0  0.1  23288  3536 pts/0    S    23:07   0:00 sh
+root           4  0.0  0.1  55912  3620 pts/0    R+   23:07   0:00 ps aux
+```
+
+But with everything in computing, if you fix one problem, you immediately get presented with another one to fix. When we exit out of the container and run `ps` on the host, we'll get presented with `Error, do this: mount -t proc proc /proc`. Because we remounted `/proc` in the container we are now left with a "broken" `/proc` mount on the host. To fix this we just need to run `mount -t proc proc /proc` again on the host to fix our problem. We can easily put this into code and mount `/proc` before starting our container and then later mount `/proc` again when we exit. But we'll need to handle many edge cases and race conditions, or otherwise, our host will likewise end up with a broken `/proc` mount. There's a better way of fixing this, which is the perfect segway into the next chapter, where we'll dig into pivoting our container into a new filesystem!
 
 ## Pivoting into a new filesystem
 
