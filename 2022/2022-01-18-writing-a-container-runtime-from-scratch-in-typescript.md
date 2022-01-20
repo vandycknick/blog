@@ -161,7 +161,7 @@ child 0 [ "sh" ]
 The example makes it look like the parent always executes before the child process. But that's not always the case; it's indeterminate which process - the parent or the child - has access to the CPU next. On a multiprocessor system, they could simultaneously access the CPU. In our case, this won't matter but do know that relying on a specific execution order could result in subtle and hard to debug race conditions. But as you can see, we're moving in the right direction. We just need a few more things in place to mimic the `docker run' command. When executing `deno run -A --unstable ./src/main/ts ps aux`, we want the child process to start running the `ps`program and use`aux`as arguments. For this, we can use`exec`, which has the following type definition:
 
 ```ts
-const exec: (fileName: string, args: string[], env?: { [key: string]: string; } | undefined) => never`
+exec(fileName: string, args: string[], env?: { [key: string]: string; } | undefined) => never`
 ```
 
 One of the first arguments takes a fileName. This can be a relative or an absolute path. If it's a relative path, the function will look in the `PATH` variable to find the binary. If it can't find the program available on your `PATH` it will stop execution and throw an error. The second argument is a string array that represents the list of arguments. The last one is an optional object that allows us to tweak the programs environment variables. We won't need this one just yet; in doing so, the child process will just inherit all environment variables. Since it replaces the program that called it, a successful `exec` never returns.
@@ -221,11 +221,59 @@ $ echo $?
 
 > The status code returned from waitPid is truncated to an 8bit value, meaning the max return value is 255. Any higher value will get wrapped around.
 
-### UNIX Time-sharing System (uts)
+Yeah, I know that was a lot of stuff to go through before we can start looking at namespaces. It had to be done, but now we are finally ready to move our process in separate namespaces. For now, we'll just focus on a subset of them; we'll dig into the other when it makes sense. We start off with the UTS or Unix time-sharing System namespace. First introduced in Linux 2.6.19 (2006), it allows us to unshare the domain- and hostname from the current host system. The `unshare()` syscall exported from the `libc` module will enable us to disassociate parts of our containers execution context from the parent process:
+
+```ts
+unshare(flags: number): void
+```
+
+The flags argument is a bitmask that specifies which parts should be unshared and can be combined to apply multiple namespaces. It's just a void function that doesn't return any meaningful value. To decouple our container from the UTS namespace, all we need to do is import the `CLONE_NEWUTS` and call it at the start of our `container` function:
+
+```ts
+import {
+  fork,
+  exec,
+  waitPid,
+  unshare,
+  CLONE_NEWUTS,
+  setHostname,
+} from "../libc/mod.ts";
+
+const container = (args: string[]): never => {
+  unshare(CLONE_NEWUTS);
+
+  setHostname("container");
+
+  const [program, ...restArgs] = args;
+  return exec(program, restArgs);
+};
+```
+
+Let's also change the hostname to a different value right before calling `exec()`. In the example above I got very original and changed it to `container`, feel free to change it to something else. Let's give it a try:
+
+```sh
+$ deno run -A --unstable ./src/main.ts sh
+Check file:///vagrant/src/main.ts
+
+sh-4.4# hostname
+container
+
+sh-4.4# hostname new-hostname
+
+sh-4.4# hostname
+new-hostname
+```
+
+And if we exit out of the container and if we look at the system level nothing has changed, hooray:
+
+```sh
+$ hostname
+rocky
+```
 
 ## Pivoting into a new filesystem
 
-While we end up with an isolated process at the moment, I guess many will argue that this isn't a container just yet. And that's indeed the case it's still missing some importanting features like an isolated filesystem.
+While we end up with an isolated process at the moment, I guess many will argue that this isn't a container just yet. And that's indeed the case it's still missing some important features like an isolated filesystem.
 
 What is needed to run a chroot environment? Not that much, since something like this already works:
 
