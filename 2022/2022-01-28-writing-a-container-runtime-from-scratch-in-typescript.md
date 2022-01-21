@@ -339,17 +339,6 @@ root           4  0.0  0.1  55912  3620 pts/0    R+   23:07   0:00 ps aux
 
 But with everything in computing, if you fix one problem, you immediately get presented with another one to fix. When we exit out of the container and run `ps` on the host, we'll get presented with `Error, do this: mount -t proc proc /proc`. Because we remounted `/proc` in the container we are now left with a "broken" `/proc` mount on the host. To fix this we just need to run `mount -t proc proc /proc` again on the host to fix our problem. We can easily put this into code and mount `/proc` before starting our container and then later mount `/proc` again when we exit. But we'll need to handle many edge cases and race conditions, or otherwise, our host will likewise end up with a broken `/proc` mount. There's a better way of fixing this, which is the perfect segway into the next chapter, where we'll dig into pivoting our container into a new filesystem!
 
-## Pivoting into a new filesystem
+## Conclusion
 
-While we end up with an isolated process at the moment, I guess many will argue that this isn't a container just yet. And that's indeed the case it's still missing some important features like an isolated filesystem.
-
-What is needed to run a chroot environment? Not that much, since something like this already works:
-
-```sh
-$ mkdir -p new-root/{bin,lib64}
-$ cp /bin/bash new-root/bin
-$ cp /lib64/{ld-linux-x86-64.so*,libc.so*,libdl.so.2,libreadline.so*,libtinfo.so*} new-root/lib64
-$ sudo chroot new-root
-```
-
-We create a new root directory, copy a bash shell and its dependencies in and run `chroot`. This jail is pretty useless: All we have at hand is bash and its builtin functions like `cd` and `pwd`.
+TODO
