@@ -5,6 +5,7 @@ description:
 date: 2022-02-11T20:00:00+01:00
 categories: [scratch, containers, typescript]
 cover: ./assets/2022-02-11-writing-a-container-runtime-from-scratch-in-typescript-part-2/cover.jpg
+draft: true
 ---
 
 ## Intro/Recap
