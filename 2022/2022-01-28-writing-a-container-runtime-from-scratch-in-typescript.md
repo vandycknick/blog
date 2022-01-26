@@ -7,17 +7,19 @@ categories: [scratch, containers, typescript]
 cover: ./assets/2022-01-28-writing-a-container-runtime-from-scratch-in-typescript/cover.jpg
 ---
 
-Containerization and especially Docker, has become immensely popular over the last couple of years. Even though Docker isn't unique or the first of its kind, it quickly became a developer's favourite thanks to its fantastic developer experience. Spawning a new shell with Docker is child's play, a quick `docker run -it ubuntu bash` provides a containerized ubuntu environment in no time. It's fast because there's no VM involved but still offers a good level of security by shielding off other parts of the operating system. Even wrapping up a new service or website in an image and shipping it up to production can be done with just a few lines on the command line. Over time whole ecosystems have spun up around it, Kubernetes or Docker Swarm for orchestration, alternative engines like podman, ebpf flavoured networking components, and the list goes on and on. It's mind-boggling how many tools are out there and how amazing this community and ecosystem has become. But have you ever dared to take a step back and wondered how containers work under the hood? Have you ever asked yourself what components make up a container? Have you ever gone hunting down the Linux source code to find that one magical API call that creates a new container? Well, I certainly have, and in this post we are going on a bit of a journey deep down into the Linux kernel. We'llgo over all the nitty-gritty details and see how the sausage gets made by writing our own container runtime from scratch in TypeScript.
+Containerization and especially Docker, has become immensely popular over the last couple of years. But Docker in't unique or the first of its kind, you may have heard about [LXC](https://github.com/lxc/lxc), [rkt](https://github.com/rkt/rkt), or maybe even [OpenVZ](https://openvz.org/). What
+
+Even though Docker isn't unique or the first of its kind, it quickly became a developer's favourite thanks to its fantastic developer experience. Spawning a new shell with Docker is child's play, a quick `docker run -it ubuntu bash` provides a containerized ubuntu environment in no time. It's fast because there's no VM involved but still offers a good level of security by shielding off other parts of the operating system. Even wrapping up a new service or website in an image and shipping it up to production can be done with just a few lines on the command line. Over time whole ecosystems have spun up around it, Kubernetes or Docker Swarm for orchestration, alternative engines like podman, ebpf flavoured networking components, and the list goes on and on. It's mind-boggling how many tools are out there and how amazing this community and ecosystem has become. But have you ever dared to take a step back and wondered how containers work under the hood? Have you ever asked yourself what components make up a container? Have you ever gone hunting down the Linux source code to find that one magical API call that creates a new container? Well, I certainly have, and in this post we are going on a bit of a journey deep down into the Linux kernel. We'llgo over all the nitty-gritty details and see how the sausage gets made by writing our own container runtime from scratch in TypeScript.
 
 ## Setting the scene
 
+I highly recommend running any of the following code snippets in a Virtual machine. While 99% of the code we'll write is rather harmless, there is a small section in this post that could cause permanent data loss if you manage to get a few wires crossed. Thats exactly why the `Vagrantfile` is there, it allows me to provide a safe pretested environment. Don't worry if you don't know Vagrant or have never heard about it before. In essence, Vagrant is similar to Docker, but instead of creating containers with Vagrant you end up with full-blown virtual machines. You can easily get it installed from [here](https://www.vagrantup.com/), and a simple `vagrant up` followed by a `vagrant ssh` allows you to follow along with the rest of the article without issues.
+
 Before jumping straight down the deep end, there are a couple of things I would like to get out of the way first. If you already are a seasoned containerization specialist or only care about the code, feel free to jump right into the next section. If not, let's get through some of the basics first and make sure we're all on the same page. Throughout the rest of this article, I'm mainly going to look at things from a Docker perspective, but the core concepts basically apply to any container runtime out there. Using Docker for this exercise makes things easier giving most people will have some level of familiarity with it.
 
-### Containers don't run on docker
+### Processes vs containers.
 
-This is a general misconception and the internet is generally wrong on this one. Ever looked up [docker architecture](https://www.google.com/search?q=docker+architecture&tbm=isch&ved=2ahUKEwjBm8z14qr1AhXTuqQKHUjwBLYQ2-cCegQIABAA&oq=docker+archit&gs_lcp=CgNpbWcQARgAMgQIABBDMgUIABCABDIFCAAQgAQyBQgAEIAEMgUIABCABDIFCAAQgAQyBggAEAUQHjIGCAAQBRAeMgYIABAFEB4yBggAEAUQHjoHCCMQ7wMQJzoICAAQsQMQgwE6CAgAEIAEELEDUMIGWL4RYI4aaABwAHgAgAHQAYgBsAmSAQYxMS4yLjGYAQCgAQGqAQtnd3Mtd2l6LWltZ8ABAQ&sclient=img&ei=EgjeYcHKOdP1kgXI4JOwCw&bih=911&biw=1904) on google. Most of the architecture diagrams here come straight from the docker marketing department. BUt containers do not run ON docker. Containers are just processes that run on the Linux kernel (or windows if thats what you fancy).
-
-Often thought of as cheap VMs, containers are just isolated groups of processes running on a single host. That isolation leverages several underlying technologies built into the Linux kernel: namespaces, cgroups, chroots, capabilities and lots of terms you've probably heard before. It basically boils down to these six things that allow us to create isolated processes:
+talk about linux containers and vm containers -> OCI
 
 ![container engine architecture](./assets/2022-01-28-writing-a-container-runtime-from-scratch-in-typescript/container-architecture.png)
 
@@ -29,13 +31,98 @@ Often thought of as cheap VMs, containers are just isolated groups of processes 
 6. Seccomp
 7. SELinux / AppArmor
 
-### Processes vs containers.
+### Containers don't run on docker
 
-### Rise of the container engine's
+This is a general misconception and the internet is generally wrong on this one. Ever looked up [docker architecture](https://www.google.com/search?q=docker+architecture&tbm=isch&ved=2ahUKEwjBm8z14qr1AhXTuqQKHUjwBLYQ2-cCegQIABAA&oq=docker+archit&gs_lcp=CgNpbWcQARgAMgQIABBDMgUIABCABDIFCAAQgAQyBQgAEIAEMgUIABCABDIFCAAQgAQyBggAEAUQHjIGCAAQBRAeMgYIABAFEB4yBggAEAUQHjoHCCMQ7wMQJzoICAAQsQMQgwE6CAgAEIAEELEDUMIGWL4RYI4aaABwAHgAgAHQAYgBsAmSAQYxMS4yLjGYAQCgAQGqAQtnd3Mtd2l6LWltZ8ABAQ&sclient=img&ei=EgjeYcHKOdP1kgXI4JOwCw&bih=911&biw=1904) on google. Most of the architecture diagrams here come straight from the docker marketing department. BUt containers do not run ON docker. Containers are just processes that run on the Linux kernel (or windows if thats what you fancy).
+
+Often thought of as cheap VMs, containers are just isolated groups of processes running on a single host. That isolation leverages several underlying technologies built into the Linux kernel: namespaces, cgroups, chroots, capabilities and lots of terms you've probably heard before. It basically boils down to these six things that allow us to create isolated processes:
+
+### Rise of the container runtime
+
+TODO: talk about containerd dockerd and podman
 
 ![Container Engine Comparison](./assets/2022-01-28-writing-a-container-runtime-from-scratch-in-typescript/ce-engine-comparison.png)
 
-Are you also seeing a pattern here? Exactly, all these different container engines use the same core component called [runc](https://github.com/opencontainers/runc). Runc does all the heavy lifting of containerizing a process, and with its simple interface, a whole ecosystem of container engines have spun up around it. There's a bit of background here as to why runc became what it is today, but I'll save you the history lesson and jump right into the TLDR. Docker used to be built as a monolithic application, all of that changed in 2015 when a considerable initiative resulted in docker becoming more modular and tools like containerd and runc saw the light of day. Remnants of this old past can still be found all over the internet: [oci initiative blog post](https://www.docker.com/blog/open-container-project-foundation), [runc announcement by solomon](https://www.docker.com/blog/runc), [initial libcontainer library before moving into runbc](https://github.com/docker-archive/libcontainer).
+Are you also seeing a pattern here? Exactly, regardless if you are using Docker or Podman or CRI-O you are, most likely using runc under the hood. Why the "most likely" part? Well it's complicated! As we saw earlier a container doesn't always map to a process sometimes a container could even be a full VM. This is where the Open Containers Initiative or OCI for short comes in to play. It defines the lower-level details of a container runtime but doesn't define the actual implementation but rather the way you communicate with it. All of this resulted in `runc` somewhat becoming the de facto implementation or reference implementation. The OCI specification github repo contains a list of [other runtimes that are OCI compliant](https://github.com/opencontainers/runtime-spec/blob/main/implementations.md). Hence `runc` is designed to deal with Linux containers, but this could always be swapped out by another runtime able to start windows containers or even full blown VM's for that matter. But I guess this is already complicate enough so these are stories for another time.
+
+There is no reason to use runc daily. It's one of those small internal utilities that is not meant to be used directly. But it's the smallest component within docker responsible for spinning up Linux containers and that's exactly what we are going to focus on in this post. So let's explore for a little bit and get basic understanding of how it works. The Vagrant image contains all the tools you need, if you are running a custom build you'll need to install runc via the package manager of the distro of your choice.
+
+In contrary to Docker or Podman, runc doesn't have a concept of images. Which means you can't just execute `runc run ubuntu:latest bash` and be done with it. Instead, runc expects you to provide an "OCI bundle", which is basically a root filesystem and a config.json file. Features like layers, tags, container registries and repositories - all of this is not part of the OCI bundle or even of the runtime-spec. There is a separate OCI-spec - image-spec - that defines images. Let's build an application bundle and see what this entails:
+
+```sh
+mkdir maersk
+cd maersk
+
+runc spec
+```
+
+The `runc spec` bootstraps a config.json file with lots of the required config already filled in. The process section defines what process will get executed within the container.
+
+```json
+{
+        "ociVersion": "1.0.2-dev",
+        "process": {
+                "terminal": true,
+                "user": {
+                        "uid": 0,
+                        "gid": 0
+                },
+                "args": [
+                        "sh"
+                ],
+                "env": [
+                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                        "TERM=xterm"
+                ],
+...
+```
+
+There's much more in here to play around with, including default mounts inside the container, capabilities, hostname etc. If you inspect this file, you will notice, that many sections are platform-agnostic and the ones that are specific to concrete OS are nested inside appropriate section. For example, you will notice there is a "linux" section with Linux specific options. But the only thing we care about now is the following which tells runc where to find the root filesystem:
+
+```sh
+...
+        "root": {
+                "path": "rootfs",
+                "readonly": true
+        },
+...
+```
+
+The only thing we still need now is a root filesystem. There's a few options here, we can prepare one fully manual by hand, extract one from a Linux distribution's rootfs.tgz file or export one from a container already run in Docker. Or use a tool like skopeo to download an OCI image from a compatible registry. To keep things easy for now, let's extract a rootfs from a Docker image by creating a new container, then using docker export:
+
+```sh
+mkdir -p rootfs
+docker export $(docker create ubuntu:latest) | tar -C rootfs -xvf -
+```
+
+If you are curious have a look at the contents of rootfs:
+
+```sh
+$ ls rootfs/
+bin   dev  home  lib32  libx32  mnt  proc  run   srv  tmp  var
+boot  etc  lib   lib64  media   opt  root  sbin  sys  usr
+```
+
+If it looks like a basic Linux root filesystem, then you are right. Ok this is it, we are finally ready to create our first container with runc. All we have to do is use the run command and give the new container a name:
+
+```sh
+$ runc run maersk
+```
+
+What happens next is that we end up in a shell inside a newly created container:
+
+```sh
+# ls
+bin   dev  home  lib32  libx32  mnt  proc  run   srv  tmp  var
+boot  etc  lib   lib64  media   opt  root  sbin  sys  usr
+S
+# ps aux
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root           1  0.0  0.0   2616   604 pts/0    Ss   22:23   0:00 sh
+root           7  0.0  0.1   5904  2944 pts/0    R+   22:24   0:00 ps aux
+```
+
+And that wraps it up! I think we should have enough background knowledge to start hacking on our own container runtime. Anything else we need to know along our journey in containerization I will explain in detail when we get there.
 
 ## Getting ready for development
 
@@ -77,11 +164,9 @@ $ deno run ./src/main.ts sh
 run [ "ps", "aux" ]
 ```
 
-I highly recommend running any of the following code snippets in a Virtual machine. While 99% of the code we'll write is rather harmless, there is a small section in this post that could cause permanent data loss if you manage to get a few wires crossed. Thats exactly why the `Vagrantfile` is there, it allows me to provide a safe pretested environment. Don't worry if you don't know Vagrant or have never heard about it before. In essence, Vagrant is similar to Docker, but instead of creating containers with Vagrant you end up with full-blown virtual machines. You can easily get it installed from [here](https://www.vagrantup.com/), and a simple `vagrant up` followed by a `vagrant ssh` allows you to follow along with the rest of the article without issues.
-
 ## Shielding of a process with namespaces
 
-Namespaces are the Linux kernel feature that enables the containerization of a process. First introduced back in 2002 with Linux 2.4.19, the idea behind a namespace is to wrap specific global system resources in an abstraction layer. This abstraction layer makes it appear as if processes within a namespace have their own isolated set of resources. Different process groups can have different sets of namespaces applied to them. Initially only the mount namespaces existed but over time more of them got added to the kernel and at the moment there are seven distinct namespaces available:
+Namespaces are the Linux kernel feature that enables the containerization of a Linux process. First introduced back in 2002 with Linux 2.4.19, the idea behind a namespace is to wrap specific global system resources in an abstraction layer. This abstraction layer makes it appear as if processes within a namespace have their own isolated set of resources. Different process groups can have different sets of namespaces applied to them. Initially only the mount namespaces existed but over time more of them got added to the kernel and at the moment there are seven distinct namespaces available:
 
 | Namespace | Flag            | Page                   | Isolates                             |
 | --------- | --------------- | ---------------------- | ------------------------------------ |
