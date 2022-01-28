@@ -7,7 +7,7 @@ categories: [scratch, containers, typescript]
 cover: ./assets/2022-02-04-writing-a-container-runtime-from-scratch-in-typescript/cover.jpg
 ---
 
-Containerization and especially Docker, has become immensely popular over the last couple of years. Even though Docker isn't unique or the first of its kind, it gained a lot of momentum because it presented a developer experience that was really unique, clean and simple. The whole idea behind it was to build the OS that allowed people to program the cloud in a way that abstracts away all the differences. On the other hand, Containerization isn't new either Google, for example, has been using containers for 15 years or so. But what Docker did was put the cloud in the hands of developers and bridge the gap between dev and ops. By now, this whole ecosystem has evolved and new tools have spun up around it, Kubernetes or Docker Swarm for orchestration, alternative engines like podman, ebpf flavoured networking components, and the list goes on and on. It's mind-boggling how many tools are out there and how amazing this ecosystem has become. But have you ever dared to take a step back and wondered how containers work under the hood? Have you ever asked yourself what components make up a container? Have you ever gone hunting down the Linux source code to find that one magical API call that creates a new container? Well, I certainly have, and in this post we are going on a bit of a journey deep down into the Linux kernel. We'll go over all the nitty-gritty details and see how the sausage gets made by writing our own container runtime from scratch in TypeScript.
+Containerization and especially Docker, has become immensely popular over the last couple of years. Even though Docker isn't unique or the first of its kind, it gained a lot of momentum because it presented a developer experience that was unique, clean and simple. The whole idea behind it was to build the OS that allowed people to program the cloud in a way that abstracts away all the differences. On the other hand, Containerization isn't new either Google, for example, has been using containers for 15 years or so. But what Docker did was put the cloud in the hands of developers and bridge the gap between dev and ops. By now, this whole ecosystem has evolved and new tools have spun up around it, Kubernetes or Docker Swarm for orchestration, alternative engines like podman, ebpf flavoured networking components, and the list goes on and on. It's mind-boggling how many tools are out there and how amazing this ecosystem has become. But have you ever dared to take a step back and wondered how containers work under the hood? Have you ever asked yourself what components make up a container? Have you ever gone hunting down the Linux source code to find that one magical API call that creates a new container? Well, I certainly have, and in this post we are going on a bit of a journey deep down into the Linux kernel. We'll go over all the nitty-gritty details and see how the sausage gets made by writing our own container runtime from scratch in TypeScript.
 
 ## Setting the scene
 
@@ -29,7 +29,7 @@ This should launch us it directly into a shell. But before jumping in, there are
 
 ### Processes vs containers.
 
-TODO: talk about linux containers and vm containers -> OCI
+TODO: talk about linux containers, processes and VMs -> OCI. Jump into high level container engine architecture to then explain that all of this is build on 7 Linux constructs (for Linux containers)
 
 ![container engine architecture](./assets/2022-02-04-writing-a-container-runtime-from-scratch-in-typescript/container-architecture.png)
 
@@ -42,6 +42,8 @@ TODO: talk about linux containers and vm containers -> OCI
 7. SELinux / AppArmor
 
 ### Containers don't run on docker
+
+TODO:
 
 Like I mentioned earlier containerization technologies have seen usage well before Docker ever became a thing.
 
@@ -215,7 +217,7 @@ clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, c
 
 Prefixing a command with `strace` will record all syscalls it makes during execution and print one line for each syscall with argument information to stderr. We'll need to send stderr to stdout with some bash redirection (`2>&1`) this way we can filter the output and make it more digestible. In the example above, you can see the first call to `execve()` is starting the Python process itself. This is because when executing this command from bash it will have called fork and the child process it created will then start up Python. `strace` is only able to trace syscalls from the child process, hence why we don't see the fork or clone call before the trace started. After that point, the child process gets replaced by the program passed to execve, and Python will be running. We then eventually see Python calling out to `clone()` and creating a new process with ID 4411. As mentioned earlier, `fork()` is just a wrapper around `clone()`, hence why we'll only find traces of the `clone()` syscall in the recordings. We can then see multiple `execve()` calls all for the `ls` binary. `execve()` requires passing an absolute path and we see Python looking for `ls` for every path in the `PATH` environment variable. Eventually, it finds `ls` at `/bin/ls` and executes the program. The parent process with ID 4410 calls `wait4()` and blocks execution until the child process (4411) exits, after which we see execution resuming in the parent process.
 
-Ok, enough talk, let's start writing some code. As mentioned a few times already, we'll need to call `fork()`, which is exported from the libc module in `libc/mod.ts`. It will return a number that allows us to determine if we are continuing in the parent, child or if the fork failed. If it returns `-1` the call to `fork()` failed, we'll immediately stop execution by throwing an error saying we could not create a new child process. If the return value is 0, we are running as the child process. When running in the child process, we'll call the `container` function and afterwards immediately call `Deno.exit` to make sure we halt execution. If `fork()` returns any other positive return value will be the child process ID indicating we are running in the parent process. In the parent process, we'll call the `waitPid` function and pass the child process ID. This will block execution until the child process is finished and return the status code from the child process, which we'll use to determine whether it ran successfully or not.
+Ok, enough talk, let's start writing some code. As mentioned a few times already, we'll need to call `fork()`, which is exported from the libc module in `libc/mod.ts`. It will return a number that allows us to determine if we are continuing in the parent, child or if the fork failed. If it returns `-1` the call to `fork()` failed, we'll immediately stop execution by throwing an error saying we could not create a new child process. If the return value is 0, we are running as the child process. When running in the child process, we'll call the `container` function and afterwards immediately call `Deno.exit()` to make sure we halt execution immediately. If `fork()` returns a positive value we'll be continuing in the parent process and the return value indiciates the childs process id. In the parent process, we'll call the `waitPid` function and pass the child process ID. This will block execution until the child process is finished and return the status code from the child process, which we'll use to determine whether it ran successfully or not.
 
 ```ts
 import { fork, waitPid } from "../libc/mod.ts";
@@ -255,13 +257,13 @@ parent 5850 [ "sh" ]
 child 0 [ "sh" ]
 ```
 
-The example makes it look like the parent always executes before the child process. But that's not always the case; it's indeterminate which process - the parent or the child - has access to the CPU next. On a multiprocessor system, they could simultaneously access the CPU. In our case, this won't matter but do know that relying on a specific execution order could result in subtle and hard to debug race conditions. As you can see, we're moving in the right direction. We just need a few more things in place to mimic the `docker run` command. When executing `deno run -A --unstable ./src/main/ts ps aux`, we want the child process to start running the `ps`program and use`aux` as arguments. For this, we can use `exec`, which has the following type definition:
+The example makes it look like the parent always executes before the child process. But that's not always the case; it's indeterminate which process - the parent or the child - has access to the CPU next. On a multiprocessor system, they could simultaneously access the CPU. In our case, this won't matter but do know that relying on a specific execution order could result in subtle and hard to debug race conditions. As you can see, we're moving in the right direction. We just need a few more things in place to mimic the `docker run` command. When executing `deno run -A --unstable ./src/main/ts ps aux`, we want the child process to start running the `ps` program and use`aux` as arguments. For this, we can use `exec`, which looks something like this:
 
 ```ts
 exec(fileName: string, args: string[], env?: { [key: string]: string; } | undefined) => never`
 ```
 
-TODO: explain there is some deviation from execve here
+An astute reader might notice that this doesn't exactly match up with what you get from `man execve`. And you are absolutely right, I had to abstract some things away here. If you want to know why look at `libc/unistd.ts` where the `exec` function is defined. You'll see that there is some pointer magic I had to go through to make it all work in TypeScript. Also, execve only accepts absolute paths and doesn't look up the given program. Given most people don't expect this behaviour, I abstracted this away and made it similar to what higher-level languages offer.
 
 One of the first arguments takes a fileName. This can be a relative or an absolute path. If it's a relative path, the function will look in the `PATH` variable to find the binary. If it can't find the program available on your `PATH` it will stop execution and throw an error. The second argument is a string array that represents the list of arguments. The last one is an optional object that allows us to tweak the programs environment variables. We won't need this one just yet; in doing so, the child process will just inherit all environment variables from the parent. Since it replaces the program that called it, a successful `exec()` never returns.
 
@@ -307,7 +309,7 @@ sh-4.4# pwd
 /vagrant
 ```
 
-Executing our mini container runtime now will start a new `sh` session and present us with a new shell prompt. The output of any command we run gets printed back to the console we currently have open. This is because `exec()` inherits stdio file descriptors of the parent process by default. Obviously, that might not always be what you want, but this will work just fine for now. Actual container engines like docker will change these file descriptors so they can capture output and pipe it to whatever they deem fit. This makes it possible to call `docker logs` on a running container and view everything printed to stdout. But that's a decent amount of work, so we'll leave that for another day. From the `waitPid` function, we get the exit code of the child process which our container runtime just reports back. This allows us to use `echo $?` on the host to figure out if our container exited gracefully or not. Let's play around with this by returning different exit codes from a containerized `sh` session:
+Executing our mini container runtime now will start a new `sh` session and present us with a new prompt. The output of any command we run gets printed back to the console we currently have open. This is because `exec()` inherits stdio file descriptors of the parent process by default. Obviously, that might not always be what you want and even brings up some security concerns but this will work just fine for now. Actual container engines like docker will change these file descriptors so they can capture output and pipe it to whatever they deem fit. This makes it possible to call `docker logs` on a running container and view everything printed to stdout. But that's a decent amount of work, so we'll leave that for another day. From the `waitPid` function, we get the exit code of the child process which our container runtime just reports back. This allows us to use `echo $?` on the host to figure out if our container exited gracefully or not. Let's play around with this by returning different exit codes from a containerized `sh` session:
 
 ```sh
 $ deno run -A --unstable ./src/main.ts sh
@@ -369,7 +371,7 @@ const container = (args: string[]): never => {
 };
 ```
 
-Let's also change the hostname to a different value right before calling `exec()`. In the example above, I got very original and changed it to `container`; feel free to change it to something more exciting if you feel like it. Let's have a look what that does:
+Let's also change the hostname to a different value right before calling `exec()`. In the example above, I got very original and changed it to `container`; feel free to change it to something more exciting if you feel like it. Let's have a look at what that does:
 
 ```sh
 $ deno run -A --unstable ./src/main.ts sh
