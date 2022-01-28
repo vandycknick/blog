@@ -2,9 +2,9 @@
 id: ea2370bd-e1d1-442d-a8c9-a891bc4baa76
 title: "Writing a container runtime from scratch in TypeScript, Part 1 Namespaces"
 description:
-date: 2022-01-28T20:00:00+01:00
+date: 2022-02-04T20:00:00+01:00
 categories: [scratch, containers, typescript]
-cover: ./assets/2022-01-28-writing-a-container-runtime-from-scratch-in-typescript/cover.jpg
+cover: ./assets/2022-02-04-writing-a-container-runtime-from-scratch-in-typescript/cover.jpg
 ---
 
 Containerization and especially Docker, has become immensely popular over the last couple of years. Even though Docker isn't unique or the first of its kind, it gained a lot of momentum because it presented a developer experience that was really unique, clean and simple. The whole idea behind it was to build the OS that allowed people to program the cloud in a way that abstracts away all the differences. On the other hand, Containerization isn't new either Google, for example, has been using containers for 15 years or so. But what Docker did was put the cloud in the hands of developers and bridge the gap between dev and ops. By now, this whole ecosystem has evolved and new tools have spun up around it, Kubernetes or Docker Swarm for orchestration, alternative engines like podman, ebpf flavoured networking components, and the list goes on and on. It's mind-boggling how many tools are out there and how amazing this ecosystem has become. But have you ever dared to take a step back and wondered how containers work under the hood? Have you ever asked yourself what components make up a container? Have you ever gone hunting down the Linux source code to find that one magical API call that creates a new container? Well, I certainly have, and in this post we are going on a bit of a journey deep down into the Linux kernel. We'll go over all the nitty-gritty details and see how the sausage gets made by writing our own container runtime from scratch in TypeScript.
@@ -31,7 +31,7 @@ This should launch us it directly into a shell. But before jumping in, there are
 
 TODO: talk about linux containers and vm containers -> OCI
 
-![container engine architecture](./assets/2022-01-28-writing-a-container-runtime-from-scratch-in-typescript/container-architecture.png)
+![container engine architecture](./assets/2022-02-04-writing-a-container-runtime-from-scratch-in-typescript/container-architecture.png)
 
 1. Namespaces
 2. Chroot/Pivot Root
@@ -53,7 +53,7 @@ Often thought of as cheap VMs, containers are just isolated groups of processes 
 
 TODO: talk about containerd dockerd and podman
 
-![Container Engine Comparison](./assets/2022-01-28-writing-a-container-runtime-from-scratch-in-typescript/ce-engine-comparison.png)
+![Container Engine Comparison](./assets/2022-02-04-writing-a-container-runtime-from-scratch-in-typescript/ce-engine-comparison.png)
 
 Are you also seeing a pattern here? Exactly, regardless if you are using Docker or Podman or CRI-O you are, most likely using runc under the hood. Why the "most likely" part? Well it's complicated! As we saw earlier a container doesn't always map to a process sometimes a container could even be a full VM. This is where the Open Containers Initiative or OCI for short comes in to play. It defines the lower-level details of a container runtime but doesn't define the actual implementation but rather the way you communicate with it. All of this resulted in `runc` somewhat becoming the de facto implementation or reference implementation. The OCI specification github repo contains a list of [other runtimes that are OCI compliant](https://github.com/opencontainers/runtime-spec/blob/main/implementations.md). Hence `runc` is designed to deal with Linux containers, but this could always be swapped out by another runtime able to start windows containers or even full blown VM's for that matter. But I guess this is already complicate enough so these are stories for another time.
 
@@ -192,7 +192,7 @@ Namespaces are the Linux kernel feature that enables the containerization of a L
 
 Don't worry about these just yet; we'll discuss them in more detail once we start writing some code. But before we can go any further, we'll need a common understand about how processes are created in the Linux kernel. If you've ever programmed before in a language like for example, you probably know that you can create a new process by calling `subprocess.Popen`. Many other programming languages offer a similar API like `exec.Command` in golang, `Process.Start` in dotnet or `child_process.spawn` in nodejs. While all these languages offer different high level API calls they all end up making the same syscalls in the Linux kernel named `fork()`, `clone()` and `execve()`. While technically `fork()` isn't actually a syscall but rather a wrapper around `clone()`. For simplicity we are going to treat it as such, mainly because you will often find it referenced as a syscall online but it's also easier to understand and implement in Deno. Using these API's to create a new process looks something like this:
 
-![fork-exec-syscall-diagram](./assets/2022-01-28-writing-a-container-runtime-from-scratch-in-typescript/fork-exec.png)
+![fork-exec-syscall-diagram](./assets/2022-02-04-writing-a-container-runtime-from-scratch-in-typescript/fork-exec.png)
 
 As you might have noticed, the calling process is often referred to as the parent process, whereas the newly created process is often called the child process. A parent will call `fork()` or `clone()` to create a new process, making an exact copy itself and continuing execution. The key point to understanding `fork()` is to realize that two processes exist after it has completed its work, and execution continues from the point where `fork()` returns. The return value allows us to determine whether after the fork we are continuing as the child or parent process. We can then use the `wait()` syscall in the parent process to block execution and wait for the child process to exit. A child process often calls out into `execve()`, which loads a new program into a process's memory. All of this might still sound very abstract at this point. But let's make this a bit more concrete by recording all syscalls while creating a new process in Python. The following one-liner Python script will run the `ls` command and print the output of the command to stdout `import subprocess; print(subprocess.check_output(['ls']).decode('utf-8'))`. With `strace` we can look under the covers and see what API calls Python calls out to create a new process:
 
