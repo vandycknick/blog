@@ -444,4 +444,4 @@ But like with everything in computing, if you fix one problem, you immediately g
 
 ## Conclusion
 
-TODO
+TODO: summarize + plus tie into part 2
