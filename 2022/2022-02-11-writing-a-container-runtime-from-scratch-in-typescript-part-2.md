@@ -8,6 +8,14 @@ cover: ./assets/2022-02-11-writing-a-container-runtime-from-scratch-in-typescrip
 draft: true
 ---
 
+PART 2: JUST SOME IDEAS AT THE MOMENT
+
+- Use chroot to change to a new filessytem
+- Explain issues with chroot
+- Use pivot_root to move to a new filesystem
+- Look into OCI bundles (skopeo)
+- Not OCI compliant but look at overlay2 and
+
 ## Intro/Recap
 
 ## Pivoting into a new filesystem
